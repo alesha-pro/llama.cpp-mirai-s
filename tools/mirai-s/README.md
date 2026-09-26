@@ -17,17 +17,20 @@ cmake --build build -j --target llama-server
 hf download anonymousmaharaj/Qwen3.8-27B-S-mirai-GGUF --local-dir qwen3.8-s
 
 # 12 GB card, 128K context (q4_0 KV), 11.3 GB peak
-./build/bin/llama-server -m qwen3.8-s/Qwen3.8-27B-S-mirai.gguf -ngl 99 -fa on --jinja \
+./build/bin/llama-server -m qwen3.8-s/Qwen3.8-27B-S-mirai.gguf -ngl 99 -fa on -np 1 --jinja \
   -c 131072 -ctk q4_0 -ctv q4_0 -b 1024 -ub 1024
 # 12 GB card, 74K context with q8_0 KV, 11.1 GB peak
-./build/bin/llama-server -m qwen3.8-s/Qwen3.8-27B-S-mirai.gguf -ngl 99 -fa on --jinja \
+./build/bin/llama-server -m qwen3.8-s/Qwen3.8-27B-S-mirai.gguf -ngl 99 -fa on -np 1 --jinja \
   -c 73728 -ctk q8_0 -ctv q8_0 -b 1024 -ub 1024
 # 16 GB card, 128K context with MTP speculative decoding, 14.6 GB peak
-./build/bin/llama-server -m qwen3.8-s/Qwen3.8-27B-S-mirai.gguf -ngl 99 -fa on --jinja \
+./build/bin/llama-server -m qwen3.8-s/Qwen3.8-27B-S-mirai.gguf -ngl 99 -fa on -np 1 --jinja \
   -c 131072 -ctk q8_0 -ctv q8_0 --spec-type draft-mtp --spec-draft-n-max 3
 # vision with the encoder on the CPU (0 VRAM): add to any line above
   --mmproj qwen3.8-s/mmproj-Qwen3.8-27B-base-f16.gguf --no-mmproj-offload -t <physical cores>
 ```
+
+`-np 1` matters on this hybrid model: every server slot keeps its own DeltaNet state, and the default slot count
+adds about 450 MB, enough to push the 128K setup past 12 GB.
 
 Mirai's checkpoint ships the language model only. The mmproj is the vision encoder of the base Qwen3.8-27B, converted
 with the stock `convert_hf_to_gguf.py --mmproj`; the compressed language model reads its embeddings fine (charts, UI
