@@ -30,7 +30,7 @@ hf download alesha-pro/Qwen3.8-27B-S-mirai-GGUF --local-dir qwen3.8-s
 ```
 
 `-np 1` matters on this hybrid model: every server slot keeps its own DeltaNet state, and the default slot count
-adds about 450 MB, enough to push the 128K setup past 12 GB.
+adds about 450 MB (11.7 GB instead of 11.3 GB at 128K), which leaves a 12 GB card almost nothing.
 
 Mirai's checkpoint ships the language model only. The mmproj is the vision encoder of the base Qwen3.8-27B, converted
 with the stock `convert_hf_to_gguf.py --mmproj`; the compressed language model reads its embeddings fine (charts, UI
