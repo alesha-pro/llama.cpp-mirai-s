@@ -951,7 +951,19 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
                 op_tensor = ggml_get_rows(ctx, w, b);
             } break;
         case GGML_OP_MUL_MAT:
-            {
+            if (ggml_is_mirai_s(w->type)) {
+                // Mirai S weights run as ggml_mirai_mul_mat on a quantized input
+                ggml_tensor * scale = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, w->ne[1]);
+                if (w->type == GGML_TYPE_MS_I3) {
+                    ggml_tensor * x_rot  = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, w->ne[0], 512);
+                    ggml_tensor * ladder = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 16);
+                    op_tensor = ggml_mirai_mul_mat(ctx, w, x_rot, scale, ladder, nullptr);
+                } else {
+                    const float codebook[5] = {};
+                    ggml_tensor * xq = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, w->ne[0] / 2 + 8, 512);
+                    op_tensor = ggml_mirai_mul_mat(ctx, w, xq, scale, nullptr, codebook);
+                }
+            } else {
                 ggml_tensor * b = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, w->ne[0], 512, w->ne[2], w->ne[3]);
                 op_tensor = ggml_mul_mat(ctx, w, b);
             } break;

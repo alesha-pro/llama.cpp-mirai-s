@@ -20,6 +20,7 @@ struct ggml_tensor;
 struct llama_cparams;
 struct llama_layer;
 struct llama_prec_policy;
+struct llama_mirai_s;
 
 struct llama_memory_context_i;
 
@@ -790,6 +791,8 @@ struct llm_graph_params {
 
     const llama_prec_policy * prec_policy = nullptr;
 
+    const llama_mirai_s * mirai = nullptr;
+
     std::map<llama_seq_id, llama_sampler *> samplers;
 
     static bool samplers_equal(
@@ -1032,6 +1035,11 @@ struct llm_graph_context {
 
     const llama_prec_policy * prec_policy;
 
+    const llama_mirai_s * mirai;
+
+    // Mirai S: quantized inputs by (input, head), so weights sharing an input share one ggml_mirai_quantize
+    mutable std::map<std::pair<const ggml_tensor *, bool>, ggml_tensor *> mirai_xq;
+
     std::map<llama_seq_id, llama_sampler *> samplers;
 
     const llm_graph_cb & cb_func;
@@ -1059,6 +1067,12 @@ struct llm_graph_context {
               ggml_tensor * w,
               ggml_tensor * cur,
               ggml_tensor * w_s = nullptr) const;
+
+    // Mirai S weight: w_s is its per-row scale, applied inside the matmul
+    ggml_tensor * build_mirai_mm(
+              ggml_tensor * w,
+              ggml_tensor * cur,
+              ggml_tensor * w_s) const;
 
     // do mat_mul_id, while optionally apply lora and per-expert scale
     ggml_tensor * build_lora_mm_id(

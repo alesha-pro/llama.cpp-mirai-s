@@ -233,6 +233,12 @@ public:
 
     size_t get_common_prefix(const server_tokens & b) const;
 
+    // like get_common_prefix, but also steps over spans where both sides spell the same text with different tokens
+    // (e.g. a generated emoji split into other byte tokens than a re-tokenized prompt gives). Returns the length of
+    // the prefix of *this and sets n_b to the length of the matching prefix of b. Text-only, no control tokens inside
+    // a re-aligned span.
+    size_t get_common_prefix_text(const struct llama_context * ctx, const server_tokens & b, size_t & n_b) const;
+
     // split the tokens into message spans, skipping over media chunks
     common_chat_msg_spans find_message_spans(const common_chat_msg_delimiters & delims) const;
 

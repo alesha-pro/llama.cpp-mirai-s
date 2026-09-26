@@ -1,0 +1,9 @@
+Mirai S support in this fork
+
+ggml/src/ggml-cuda/mirai-s.cu and ggml/src/ggml-cpu/mirai-s.cpp port the math and CUDA kernels of Mirai Labs'
+mirai_s vLLM plugin, version 0.2.1, shipped in the vllm/ folder of
+https://huggingface.co/trymirai/Qwen3.8-27B-S-experimental under the Apache License 2.0 (text in
+LICENSE-mirai_s-plugin next to this file). The code was rewritten for ggml tensors, the GGUF layout written by
+convert_mirai_s_to_gguf.py, and llama.cpp's graph; the trellis codec and its constants are Mirai's.
+
+The rest of the fork is llama.cpp (https://github.com/ggml-org/llama.cpp, MIT, see LICENSE at the repo root).

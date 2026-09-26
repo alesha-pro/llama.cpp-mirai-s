@@ -713,6 +713,11 @@ enum llm_tensor {
     LLM_TENSOR_DFLASH_SELECTOR_PREV,
     LLM_TENSOR_DFLASH_SELECTOR_NEXT,
     LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,
+    // Mirai S shared tensors: input rotations per width (signs, then small_q), head input signs + ladder
+    LLM_TENSOR_MIRAI_ROT_5120,
+    LLM_TENSOR_MIRAI_ROT_6144,
+    LLM_TENSOR_MIRAI_ROT_17408,
+    LLM_TENSOR_MIRAI_HEAD_AUX,
 };
 
 

@@ -1221,6 +1221,19 @@ struct llama_model::impl {
     std::vector<float> tensor_split_owned;
 };
 
+ggml_tensor * llama_mirai_s::rot(int64_t n_in) const {
+    switch (n_in) {
+        case 5120:  return rot_5120;
+        case 6144:  return rot_6144;
+        case 17408: return rot_17408;
+        default:    return nullptr;
+    }
+}
+
+const float * llama_mirai_s::codebook(ggml_type type) const {
+    return type == GGML_TYPE_MS_V4T8 ? codebook_v4 : codebook_v2;
+}
+
 bool llama_prec_policy::apply(ggml_tensor * res) const {
     if (!res || !res->src[0]) {
         return false;
@@ -1629,38 +1642,45 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
         // generic pass: load optional per-tensor/per-expert ".scale" tensors (e.g. NVFP4 scale2)
         // this avoids having to add scale loading to every architecture
+        // (Mirai S weights carry one scale per output row instead)
+        const auto create_scale = [&](llm_tensor type, int i, const ggml_tensor * w) {
+            if (w && ggml_is_mirai_s(w->type)) {
+                return create_tensor(tn(type, "scale", i), {w->ne[1]}, 0);
+            }
+            return create_tensor(tn(type, "scale", i), {1}, TENSOR_NOT_REQUIRED);
+        };
         for (int i = 0; i < n_layer_all; ++i) {
             auto & layer = layers[i];
 
             // attention weight scales (per-tensor, shape {1})
             if (!layer.wq_s && layer.wq) {
-                layer.wq_s = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "scale", i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wq_s = create_scale(LLM_TENSOR_ATTN_Q, i, layer.wq);
             }
             if (!layer.wk_s && layer.wk) {
-                layer.wk_s = create_tensor(tn(LLM_TENSOR_ATTN_K,   "scale", i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wk_s = create_scale(LLM_TENSOR_ATTN_K, i, layer.wk);
             }
             if (!layer.wv_s && layer.wv) {
-                layer.wv_s = create_tensor(tn(LLM_TENSOR_ATTN_V,   "scale", i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wv_s = create_scale(LLM_TENSOR_ATTN_V, i, layer.wv);
             }
             if (!layer.wo_s && layer.wo) {
-                layer.wo_s = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "scale", i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wo_s = create_scale(LLM_TENSOR_ATTN_OUT, i, layer.wo);
             }
             if (!layer.wqkv_s && layer.wqkv) {
-                layer.wqkv_s = create_tensor(tn(LLM_TENSOR_ATTN_QKV, "scale", i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wqkv_s = create_scale(LLM_TENSOR_ATTN_QKV, i, layer.wqkv);
             }
             if (!layer.wqkv_gate_s && layer.wqkv_gate) {
-                layer.wqkv_gate_s = create_tensor(tn(LLM_TENSOR_ATTN_GATE, "scale", i), {1}, TENSOR_NOT_REQUIRED);
+                layer.wqkv_gate_s = create_scale(LLM_TENSOR_ATTN_GATE, i, layer.wqkv_gate);
             }
 
             // dense FFN weight scales (per-tensor, shape {1})
             if (!layer.ffn_gate_s && layer.ffn_gate) {
-                layer.ffn_gate_s = create_tensor(tn(LLM_TENSOR_FFN_GATE, "scale", i), {1}, TENSOR_NOT_REQUIRED);
+                layer.ffn_gate_s = create_scale(LLM_TENSOR_FFN_GATE, i, layer.ffn_gate);
             }
             if (!layer.ffn_down_s && layer.ffn_down) {
-                layer.ffn_down_s = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "scale", i), {1}, TENSOR_NOT_REQUIRED);
+                layer.ffn_down_s = create_scale(LLM_TENSOR_FFN_DOWN, i, layer.ffn_down);
             }
             if (!layer.ffn_up_s && layer.ffn_up) {
-                layer.ffn_up_s = create_tensor(tn(LLM_TENSOR_FFN_UP, "scale", i), {1}, TENSOR_NOT_REQUIRED);
+                layer.ffn_up_s = create_scale(LLM_TENSOR_FFN_UP, i, layer.ffn_up);
             }
             if (!layer.ffn_gate_shexp_s && layer.ffn_gate_shexp) {
                 layer.ffn_gate_shexp_s = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP, "scale", i), {1}, TENSOR_NOT_REQUIRED);
@@ -1688,7 +1708,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 layer.ssm_in_s = create_tensor(tn(LLM_TENSOR_SSM_IN, "scale", i), {1}, TENSOR_NOT_REQUIRED);
             }
             if (!layer.ssm_out_s && layer.ssm_out) {
-                layer.ssm_out_s = create_tensor(tn(LLM_TENSOR_SSM_OUT, "scale", i), {1}, TENSOR_NOT_REQUIRED);
+                layer.ssm_out_s = create_scale(LLM_TENSOR_SSM_OUT, i, layer.ssm_out);
             }
             if (!layer.ssm_alpha_s && layer.ssm_alpha) {
                 layer.ssm_alpha_s = create_tensor(tn(LLM_TENSOR_SSM_ALPHA, "scale", i), {1}, TENSOR_NOT_REQUIRED);
@@ -1768,6 +1788,27 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 layer.nextn.shared_head_head_in_s = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "input_scale", i), {1}, TENSOR_NOT_REQUIRED);
             }
         }
+        // Mirai S: the head's per-row scale and the model-wide tensors
+        if (gguf_find_key(ml.metadata, "mirai.version") >= 0) {
+            if (output && ggml_is_mirai_s(output->type)) {
+                output_s = create_tensor(tn(LLM_TENSOR_OUTPUT, "scale"), {output->ne[1]}, 0);
+                mirai.head_aux = create_tensor(tn(LLM_TENSOR_MIRAI_HEAD_AUX), {output->ne[0] + 16}, 0);
+            }
+            mirai.rot_5120  = create_tensor(tn(LLM_TENSOR_MIRAI_ROT_5120),  {5120 + 5 * 5},    TENSOR_NOT_REQUIRED);
+            mirai.rot_6144  = create_tensor(tn(LLM_TENSOR_MIRAI_ROT_6144),  {6144 + 3 * 3},    TENSOR_NOT_REQUIRED);
+            mirai.rot_17408 = create_tensor(tn(LLM_TENSOR_MIRAI_ROT_17408), {17408 + 17 * 17}, TENSOR_NOT_REQUIRED);
+            for (const auto & [key, dst] : { std::make_pair("mirai.codebook.v4", mirai.codebook_v4),
+                                             std::make_pair("mirai.codebook.v2", mirai.codebook_v2) }) {
+                const int kid = gguf_find_key(ml.metadata, key);
+                if (kid < 0 || gguf_get_kv_type(ml.metadata, kid) != GGUF_TYPE_ARRAY ||
+                        gguf_get_arr_type(ml.metadata, kid) != GGUF_TYPE_FLOAT32 || gguf_get_arr_n(ml.metadata, kid) != 5) {
+                    throw std::runtime_error(format("Mirai S: %s must be 5 floats", key));
+                }
+                memcpy(dst, gguf_get_arr_data(ml.metadata, kid), 5 * sizeof(float));
+            }
+            mirai.enabled = true;
+        }
+
         // output scales
         if (output && output->type == GGML_TYPE_NVFP4) {
             // weight scale

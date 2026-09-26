@@ -236,6 +236,15 @@ struct server_batch {
     }
 };
 
+// LLAMA_SERVER_TEXT_ALIGN=0 turns off matching the prompt cache by text (see server_tokens::get_common_prefix_text)
+static bool server_text_align_enabled() {
+    static const bool enabled = [] {
+        const char * env = getenv("LLAMA_SERVER_TEXT_ALIGN");
+        return env == nullptr || atoi(env) != 0;
+    }();
+    return enabled;
+}
+
 struct server_slot {
     int id;
 
@@ -1581,7 +1590,10 @@ private:
                 }
 
                 // fraction of the Longest Common Prefix length with respect to the input prompt length
-                const size_t lcp_len = tokens.get_common_prefix(task.tokens);
+                size_t lcp_len = tokens.get_common_prefix(task.tokens);
+                if (server_text_align_enabled()) {
+                    tokens.get_common_prefix_text(ctx_tgt, task.tokens, lcp_len);
+                }
                 const float f_sim_cur = float(lcp_len) / task.tokens.size();
 
                 SLT_TRC(slot, " - checking sim = %.3f (%zu/%zu) > %.3f\n", f_sim_cur, lcp_len, task.tokens.size(), slot_prompt_similarity);
@@ -1720,6 +1732,24 @@ private:
             }
         } else {
             slot.lora = params_base.lora_adapters;
+        }
+
+        // a prompt that re-tokenizes earlier generated text can spell a span with other tokens than were generated
+        // (emoji and other multi-byte characters): take the cached tokens for the text-equal prefix so that the cache,
+        // which a recurrent/hybrid model can only reuse as a whole, still matches
+        if (task.params.cache_prompt && server_text_align_enabled() && !task.is_child() && !slot.prompt.tokens.empty()) {
+            const size_t n_plain = slot.prompt.tokens.get_common_prefix(task.tokens);
+            size_t n_new = 0;
+            const size_t n_cached = slot.prompt.tokens.get_common_prefix_text(ctx_tgt, task.tokens, n_new);
+            if (n_new > n_plain) {
+                const llama_tokens & cached = slot.prompt.tokens.get_tokens();
+                const llama_tokens & prompt = task.tokens.get_tokens();
+                llama_tokens aligned(cached.begin(), cached.begin() + n_cached);
+                aligned.insert(aligned.end(), prompt.begin() + n_new, prompt.end());
+                SLT_INF(slot, "prompt aligned to the cached tokens by text: token prefix %zu, text prefix %zu (%zu prompt tokens), prompt %zu -> %zu tokens\n",
+                        n_plain, n_cached, n_new, task.tokens.size(), aligned.size());
+                task.tokens = server_tokens(aligned, false);
+            }
         }
 
         // if using alora, make sure it's only a single one requested and active

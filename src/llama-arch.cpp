@@ -706,6 +706,10 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_DFLASH_SELECTOR_PREV,                   "selector_predecessor" },
     { LLM_TENSOR_DFLASH_SELECTOR_NEXT,                   "selector_successor" },
     { LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,                 "selector_hidden" },
+    { LLM_TENSOR_MIRAI_ROT_5120,                         "mirai.rot.5120" },
+    { LLM_TENSOR_MIRAI_ROT_6144,                         "mirai.rot.6144" },
+    { LLM_TENSOR_MIRAI_ROT_17408,                        "mirai.rot.17408" },
+    { LLM_TENSOR_MIRAI_HEAD_AUX,                         "mirai.head_aux" },
 };
 
 // declare information about the model weight tensors:
@@ -997,6 +1001,11 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_DFLASH_SELECTOR_PREV,       {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
     {LLM_TENSOR_DFLASH_SELECTOR_NEXT,       {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
     {LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,     {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+    // Mirai S: read by ggml_mirai_quantize / ggml_mirai_mul_mat; probed as MUL, which every backend supports
+    {LLM_TENSOR_MIRAI_ROT_5120,             {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
+    {LLM_TENSOR_MIRAI_ROT_6144,             {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
+    {LLM_TENSOR_MIRAI_ROT_17408,            {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
+    {LLM_TENSOR_MIRAI_HEAD_AUX,             {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
 };
 
 LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}

@@ -1490,6 +1490,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     mctx             (params.mctx),
     cross            (params.cross),
     prec_policy      (params.prec_policy),
+    mirai            (params.mirai),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -1512,10 +1513,51 @@ ggml_tensor * llm_graph_context::build_cvec(
     return cvec->apply_to(ctx0, cur, il);
 }
 
+ggml_tensor * llm_graph_context::build_mirai_mm(
+          ggml_tensor * w,
+          ggml_tensor * cur,
+          ggml_tensor * w_s) const {
+    GGML_ASSERT(mirai && "Mirai S weight without the model's mirai.* tensors");
+    GGML_ASSERT(w_s && w_s->ne[0] == w->ne[1] && "Mirai S weight without its per-row scale");
+    const bool head = w->type == GGML_TYPE_MS_I3;
+    const int64_t n_in = w->ne[0];
+
+    ggml_tensor * xq;
+    const auto key = std::make_pair(static_cast<const ggml_tensor *>(cur), head);
+    const auto it = mirai_xq.find(key);
+    if (it != mirai_xq.end()) {
+        xq = it->second;
+    } else {
+        ggml_tensor * x = ggml_is_contiguous(cur) ? cur : ggml_cont(ctx0, cur);
+        x = ggml_reshape_2d(ctx0, x, n_in, ggml_nelements(x) / n_in);
+        ggml_tensor * rot = head ? ggml_view_1d(ctx0, mirai->head_aux, n_in, 0) : mirai->rot(n_in);
+        GGML_ASSERT(rot && "Mirai S: no rotation for this input width");
+        xq = ggml_mirai_quantize(ctx0, x, rot, head);
+        mirai_xq.emplace(key, xq);
+    }
+
+    ggml_tensor * res;
+    if (head) {
+        ggml_tensor * ladder = ggml_view_1d(ctx0, mirai->head_aux, 16, n_in * sizeof(float));
+        res = ggml_mirai_mul_mat(ctx0, w, xq, w_s, ladder, nullptr);
+    } else {
+        res = ggml_mirai_mul_mat(ctx0, w, xq, w_s, nullptr, mirai->codebook(w->type));
+    }
+    if (ggml_n_dims(cur) > 2) {
+        res = ggml_reshape_4d(ctx0, res, w->ne[1], cur->ne[1], cur->ne[2], cur->ne[3]);
+    }
+    return res;
+}
+
 ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * w,
           ggml_tensor * cur,
           ggml_tensor * w_s) const {
+    if (ggml_is_mirai_s(w->type)) {
+        GGML_ASSERT(loras->empty() && "LoRA adapters on Mirai S weights are not supported");
+        return build_mirai_mm(w, cur, w_s);
+    }
+
     ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
 
     if (prec_policy) {
@@ -1792,7 +1834,15 @@ ggml_tensor * llm_graph_context::build_ffn(
     GGML_ASSERT(!gate_s || !gate || gate->type != GGML_TYPE_NVFP4 || !has_lora(gate));
     GGML_ASSERT(!down_s || !down || down->type != GGML_TYPE_NVFP4 || !has_lora(down));
 
-    ggml_tensor * tmp = up ? build_lora_mm(up, cur) : cur;
+    // Mirai S weights apply their per-row scale inside the matmul
+    ggml_tensor * up_ms   = up   && ggml_is_mirai_s(up->type)   ? up_s   : nullptr;
+    ggml_tensor * gate_ms = gate && ggml_is_mirai_s(gate->type) ? gate_s : nullptr;
+    ggml_tensor * down_ms = down && ggml_is_mirai_s(down->type) ? down_s : nullptr;
+    if (up_ms)   { up_s   = nullptr; }
+    if (gate_ms) { gate_s = nullptr; }
+    if (down_ms) { down_s = nullptr; }
+
+    ggml_tensor * tmp = up ? build_lora_mm(up, cur, up_ms) : cur;
     cb(tmp, "ffn_up", il);
 
     if (up_b) {
@@ -1809,12 +1859,12 @@ ggml_tensor * llm_graph_context::build_ffn(
         switch (type_gate) {
             case LLM_FFN_SEQ:
                 {
-                    cur = build_lora_mm(gate, tmp);
+                    cur = build_lora_mm(gate, tmp, gate_ms);
                     cb(cur, "ffn_gate", il);
                 } break;
             case LLM_FFN_PAR:
                 {
-                    cur = build_lora_mm(gate, cur);
+                    cur = build_lora_mm(gate, cur, gate_ms);
                     cb(cur, "ffn_gate", il);
                 } break;
         }
@@ -1932,7 +1982,7 @@ ggml_tensor * llm_graph_context::build_ffn(
     }
 
     if (down) {
-        cur = build_lora_mm(down, cur);
+        cur = build_lora_mm(down, cur, down_ms);
         if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE || arch == LLM_ARCH_JAIS2) {
             // GLM4, GLM4_MOE, and JAIS2 seem to have numerical issues with half-precision accumulators
             ggml_prec_set_acc(cur, GGML_PREC_F32);

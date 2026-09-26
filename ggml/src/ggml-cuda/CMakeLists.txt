@@ -162,7 +162,7 @@ if (CUDAToolkit_FOUND)
         if (GGML_CUDA_CUB_3DOT2)
             target_link_libraries(ggml-cuda PRIVATE  CCCL::CCCL)
         endif()
-        target_link_libraries(ggml-cuda PRIVATE CUDA::cudart CUDA::cublas)
+        target_link_libraries(ggml-cuda PRIVATE CUDA::cudart CUDA::cublas CUDA::cublasLt)  # cublasLt: mirai-s.cu
     endif()
 
     if (GGML_CUDA_NO_VMM)

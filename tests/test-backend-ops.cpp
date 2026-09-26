@@ -4672,6 +4672,71 @@ struct test_rwkv_wkv6 : public test_case {
 };
 
 // GGML_OP_GATED_DELTA_NET
+// GGML_OP_MIRAI_QUANTIZE + GGML_OP_MIRAI_MUL_MAT, on random codes (every bit pattern is a valid trellis tape)
+struct test_mirai_s : public test_case {
+    const ggml_type type;
+    const int64_t k;
+    const int64_t n;
+    const int64_t t;
+
+    std::string vars() override {
+        return VARS_TO_STR4(type, k, n, t);
+    }
+
+    test_mirai_s(ggml_type type = GGML_TYPE_MS_V4T8, int64_t k = 5120, int64_t n = 64, int64_t t = 1)
+        : type(type), k(k), n(n), t(t) {}
+
+    double max_nmse_err() override {
+        return 1e-6;
+    }
+
+    // the quantized input is an opaque blob whose int8 codes may differ by one at rounding ties: compare the output
+    bool run_whole_graph() override { return true; }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const bool head = type == GGML_TYPE_MS_I3;
+        const int64_t order = k == 5120 ? 5 : k == 6144 ? 3 : 17;
+        ggml_tensor * w     = ggml_new_tensor_2d(ctx, type, k, n);
+        ggml_tensor * x     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k, t);
+        ggml_tensor * rot   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, head ? k : k + order * order);
+        ggml_tensor * scale = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n);
+        ggml_set_name(w, "w");
+        ggml_set_name(x, "x");
+        ggml_set_name(rot, "rot");
+        ggml_set_name(scale, "scale");
+        ggml_tensor * xq = ggml_mirai_quantize(ctx, x, rot, head);
+        if (head) {
+            ggml_tensor * ladder = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 16);
+            ggml_set_name(ladder, "ladder");
+            return ggml_mirai_mul_mat(ctx, w, xq, scale, ladder, nullptr);
+        }
+        static const float codebook[5] = { 0.052f, -0.082f, -0.078f, -0.078f, -0.081f };
+        return ggml_mirai_mul_mat(ctx, w, xq, scale, nullptr, codebook);
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        std::mt19937 rng(1234);
+        for (ggml_tensor * tensor = ggml_get_first_tensor(ctx); tensor != nullptr; tensor = ggml_get_next_tensor(ctx, tensor)) {
+            if (ggml_is_mirai_s(tensor->type)) {
+                std::vector<uint8_t> bytes(ggml_nbytes(tensor));
+                for (auto & b : bytes) {
+                    b = static_cast<uint8_t>(rng());
+                }
+                ggml_backend_tensor_set(tensor, bytes.data(), 0, bytes.size());
+            } else if (strcmp(tensor->name, "rot") == 0) {
+                std::vector<float> rot(ggml_nelements(tensor));
+                std::uniform_real_distribution<float> dist(-0.6f, 0.6f);
+                for (int64_t i = 0; i < (int64_t) rot.size(); ++i) {
+                    rot[i] = i < k ? ((rng() & 1) ? 1.0f : -1.0f) : dist(rng);
+                }
+                ggml_backend_tensor_set(tensor, rot.data(), 0, rot.size() * sizeof(float));
+            } else if (tensor->op == GGML_OP_NONE) {
+                init_tensor_uniform(tensor, strcmp(tensor->name, "scale") == 0 ? 0.5f : -1.0f, 1.0f);
+            }
+        }
+    }
+};
+
 struct test_gated_delta_net : public test_case {
     const ggml_type type;
 
@@ -10960,6 +11025,22 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // single-token decode with GQA head packing in the vector kernel: quantized and f16 K/V, GQA ratios 2-12
+    for (int hs : { 64, 128, 256 }) {
+        for (int nr2 : { 2, 3, 4, 6, 8, 12 }) {
+            for (bool mask : { true, false }) {
+                for (bool sinks : { false, true }) {
+                    for (int kv : { 512, 4096 }) {
+                        for (ggml_type type_KV : { GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_F16 }) {
+                            test_cases.emplace_back(new test_flash_attn_ext(
+                                hs, hs, 4, {nr2, 1}, kv, 1, mask, sinks, 0.0f, 0.0f, GGML_PREC_F32, type_KV, type_KV));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // asymmetric head_dim (hsk != hsv) with one or both sides not 64-aligned
     test_cases.emplace_back(new test_flash_attn_ext(72, 64, 4, {1, 1}, 256, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(64, 72, 4, {1, 1}, 256, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
@@ -11162,6 +11243,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_moe_reduce(2048, 15, 40, false, true));
     test_cases.emplace_back(new test_moe_reduce(2048, 16, 32, false, true));
 
+    // Mirai S: 1 token (gemv), <= 16 (split quantize, mma n8/n16), <= 384 (transform, mma n32/n64), longer (cuBLAS)
+    for (int64_t t : { 1, 5, 16, 33, 100, 400 }) {
+        test_cases.emplace_back(new test_mirai_s(GGML_TYPE_MS_V4T8, 5120,  96, t));
+        test_cases.emplace_back(new test_mirai_s(GGML_TYPE_MS_V4T8, 17408, 64, t));
+        test_cases.emplace_back(new test_mirai_s(GGML_TYPE_MS_V2T4, 17408, 64, t));
+        test_cases.emplace_back(new test_mirai_s(GGML_TYPE_MS_V2T6, 5120,  64, t));
+        test_cases.emplace_back(new test_mirai_s(GGML_TYPE_MS_V2T6, 6144,  128, t));
+    }
+    for (int64_t t : { 1, 3, 40 }) {
+        test_cases.emplace_back(new test_mirai_s(GGML_TYPE_MS_I3, 5120, 512, t));
+    }
+
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1, 1));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 16, 1, 1));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 16, 1, 1, 1, true, true));
@@ -11190,6 +11283,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64, 200, 1));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64, 127, 2));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64,  64, 1, 1, false, true));
+    // CUDA chunked prefill kernel: Qwen3.5 head size, q/k broadcast to 3x the V heads, chunk tails, two sequences
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128,   64, 1, 3));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128,  100, 1, 3));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128,  513, 1, 3));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 2, 128, 2048, 1, 3));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128,  200, 2, 1));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128,  150, 1, 1, true));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4,  64,  300, 2, 2));
+    // chunked prefill + token-by-token tail that writes the rollback snapshots (MTP)
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128,  100, 1, 3, false, false, 4));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128,   68, 1, 1, false, false, 4));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4,  64,  200, 2, 1, false, false, 3));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64,  33, 1, 1, false, true));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64, 100, 1, 1, false, true));
 

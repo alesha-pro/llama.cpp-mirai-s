@@ -1,3 +1,16 @@
+# llama.cpp-mirai-s
+
+llama.cpp with support for [Mirai S](https://huggingface.co/trymirai/Qwen3.8-27B-S-experimental), Mirai Labs' 2.4-bit
+Qwen3.8-27B. The compressed trellis codes load from a GGUF bit for bit and run on CUDA, and the model fits a 12 GB GPU
+with 128K context. The fork also speeds up long-context decode with a q8_0/q4_0 KV cache, adds a chunked DeltaNet
+prefill kernel, and keeps the prompt cache when an agent's history re-tokenizes differently.
+
+- Build, run, formats, numbers: [tools/mirai-s/README.md](tools/mirai-s/README.md)
+- GGUF and vision mmproj: [anonymousmaharaj/Qwen3.8-27B-S-mirai-GGUF](https://huggingface.co/anonymousmaharaj/Qwen3.8-27B-S-mirai-GGUF)
+- Base: ggml-org/llama.cpp at `d834d44e6`. Everything below this line is the upstream README.
+
+---
+
 # llama.cpp
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)

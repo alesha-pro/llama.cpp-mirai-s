@@ -694,6 +694,62 @@ std::string server_tokens::detokenize(const llama_context * ctx, bool special) c
     return common_detokenize(ctx, text_tokens, special);
 }
 
+size_t server_tokens::get_common_prefix_text(const llama_context * ctx, const server_tokens & b, size_t & n_b) const {
+    size_t na = get_common_prefix(b);
+    n_b = na;
+    if (has_mtmd || b.has_mtmd) {
+        return na;
+    }
+
+    const llama_vocab * vocab = llama_model_get_vocab(llama_get_model(ctx));
+    const auto plain = [&](llama_token t) {
+        return (llama_vocab_get_attr(vocab, t) & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_USER_DEFINED | LLAMA_TOKEN_ATTR_UNKNOWN)) == 0;
+    };
+
+    size_t nb = na;
+    while (na < tokens.size() && nb < b.tokens.size()) {
+        // walk both sides piece by piece until the texts meet at a token boundary or differ
+        std::string sa;
+        std::string sb;
+        size_t ia = na;
+        size_t ib = nb;
+        bool synced = false;
+        for (int step = 0; step < 128; ++step) {
+            if (sa.size() <= sb.size()) {
+                if (ia == tokens.size() || !plain(tokens[ia])) {
+                    break;
+                }
+                sa += common_token_to_piece(ctx, tokens[ia++], true);
+            } else {
+                if (ib == b.tokens.size() || !plain(b.tokens[ib])) {
+                    break;
+                }
+                sb += common_token_to_piece(ctx, b.tokens[ib++], true);
+            }
+            const size_t m = std::min(sa.size(), sb.size());
+            if (sa.compare(0, m, sb, 0, m) != 0) {
+                break;
+            }
+            if (sa.size() == sb.size() && !sa.empty()) {
+                synced = true;
+                break;
+            }
+        }
+        if (!synced) {
+            break;
+        }
+        na = ia;
+        nb = ib;
+        while (na < tokens.size() && nb < b.tokens.size() && tokens[na] == b.tokens[nb]) {
+            na++;
+            nb++;
+        }
+    }
+
+    n_b = nb;
+    return na;
+}
+
 size_t server_tokens::get_common_prefix(const server_tokens & b) const {
     const size_t max_idx = std::min(tokens.size(), b.tokens.size());
 

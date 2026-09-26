@@ -943,6 +943,31 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = 0,
         .is_quantized             = false,
     },
+    // Mirai S: sizes per packet of one row; a tensor is whole groups of 32 rows (packets, then entry states)
+    [GGML_TYPE_MS_V4T8] = {
+        .type_name                = "ms_v4t8",
+        .blck_size                = 64,
+        .type_size                = 16 + 1,
+        .is_quantized             = true,
+    },
+    [GGML_TYPE_MS_V2T4] = {
+        .type_name                = "ms_v2t4",
+        .blck_size                = 64,
+        .type_size                = 16 + 2,
+        .is_quantized             = true,
+    },
+    [GGML_TYPE_MS_V2T6] = {
+        .type_name                = "ms_v2t6",
+        .blck_size                = 128,
+        .type_size                = 48 + 2,
+        .is_quantized             = true,
+    },
+    [GGML_TYPE_MS_I3] = {
+        .type_name                = "ms_i3",
+        .blck_size                = 128,
+        .type_size                = 48 + 1,
+        .is_quantized             = true,
+    },
 };
 
 const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {
@@ -1084,6 +1109,8 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "DSV4_HC_COMB",
     "DSV4_HC_PRE",
     "DSV4_HC_POST",
+    "MIRAI_QUANTIZE",
+    "MIRAI_MUL_MAT",
 
     "UNARY",
 
@@ -1101,7 +1128,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1199,6 +1226,8 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "dsv4_hc_comb(mixes, scale, base)",
     "dsv4_hc_pre(x, weights)",
     "dsv4_hc_post(x, residual, post, comb)",
+    "mirai_quantize(x, rot)",
+    "mirai_mul_mat(w, xq, scale)",
 
     "unary(x)",
 
@@ -1216,7 +1245,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6558,6 +6587,76 @@ struct ggml_tensor * ggml_dsv4_hc_pre_gated(
         struct ggml_tensor  * gate,
         float                 scale) {
     return ggml_dsv4_hc_pre_impl(ctx, x, gate, scale, true);
+}
+
+// ggml_mirai_quantize, ggml_mirai_mul_mat
+
+bool ggml_is_mirai_s(enum ggml_type type) {
+    return type == GGML_TYPE_MS_V4T8 || type == GGML_TYPE_MS_V2T4 || type == GGML_TYPE_MS_V2T6 || type == GGML_TYPE_MS_I3;
+}
+
+struct ggml_tensor * ggml_mirai_quantize(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * x,
+        struct ggml_tensor  * rot,
+        bool                  head) {
+    GGML_ASSERT(x->type == GGML_TYPE_F32 && ggml_is_contiguous(x));
+    GGML_ASSERT(rot->type == GGML_TYPE_F32 && ggml_is_contiguous(rot));
+    const int64_t K = x->ne[0];
+    const int64_t n_tokens = ggml_nrows(x);
+    int32_t order = 0;
+    struct ggml_tensor * result;
+    if (head) {
+        GGML_ASSERT(rot->ne[0] == K && K % 32 == 0);
+        result = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, K, n_tokens);
+    } else {
+        GGML_ASSERT(rot->ne[0] > K);
+        while ((int64_t) (order + 1) * (order + 1) <= rot->ne[0] - K) {
+            order++;
+        }
+        GGML_ASSERT((int64_t) order * order == rot->ne[0] - K && K % order == 0);
+        const int64_t width = K / order;
+        GGML_ASSERT(width >= 64 && (width & (width - 1)) == 0);
+        result = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, K / 2 + 8, n_tokens);
+    }
+    const int32_t params[2] = { head ? 1 : 0, order };
+    ggml_set_op_params(result, params, sizeof(params));
+    result->op     = GGML_OP_MIRAI_QUANTIZE;
+    result->src[0] = x;
+    result->src[1] = rot;
+    return result;
+}
+
+struct ggml_tensor * ggml_mirai_mul_mat(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * w,
+        struct ggml_tensor  * xq,
+        struct ggml_tensor  * scale,
+        struct ggml_tensor  * aux,
+        const float         * codebook) {
+    GGML_ASSERT(ggml_is_mirai_s(w->type) && ggml_is_contiguous(w));
+    GGML_ASSERT(w->ne[1] % 32 == 0 && w->ne[2] == 1 && w->ne[3] == 1);
+    GGML_ASSERT(xq->op == GGML_OP_MIRAI_QUANTIZE || xq->view_src == NULL);
+    GGML_ASSERT(scale->type == GGML_TYPE_F32 && scale->ne[0] == w->ne[1]);
+    const int64_t K = w->ne[0];
+    const int64_t n_tokens = xq->ne[1];
+    float params[5] = { 0 };
+    if (w->type == GGML_TYPE_MS_I3) {
+        GGML_ASSERT(xq->type == GGML_TYPE_F16 && xq->ne[0] == K);
+        GGML_ASSERT(aux && aux->type == GGML_TYPE_F32 && aux->ne[0] == 16);
+    } else {
+        GGML_ASSERT(xq->type == GGML_TYPE_I32 && xq->ne[0] == K / 2 + 8);
+        GGML_ASSERT(codebook != NULL && aux == NULL);
+        memcpy(params, codebook, sizeof(params));
+    }
+    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, w->ne[1], n_tokens);
+    ggml_set_op_params(result, params, sizeof(params));
+    result->op     = GGML_OP_MIRAI_MUL_MAT;
+    result->src[0] = w;
+    result->src[1] = xq;
+    result->src[2] = scale;
+    result->src[3] = aux;
+    return result;
 }
 
 // ggml_dsv4_hc_post
