@@ -9,12 +9,12 @@ Base: llama.cpp `d834d44e6`.
 ## Quick start
 
 A ready GGUF (and a vision mmproj) is on Hugging Face:
-[anonymousmaharaj/Qwen3.8-27B-S-mirai-GGUF](https://huggingface.co/anonymousmaharaj/Qwen3.8-27B-S-mirai-GGUF).
+[alesha-pro/Qwen3.8-27B-S-mirai-GGUF](https://huggingface.co/alesha-pro/Qwen3.8-27B-S-mirai-GGUF).
 
 ```bash
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -DCUDAToolkit_ROOT=/usr/local/cuda
 cmake --build build -j --target llama-server
-hf download anonymousmaharaj/Qwen3.8-27B-S-mirai-GGUF --local-dir qwen3.8-s
+hf download alesha-pro/Qwen3.8-27B-S-mirai-GGUF --local-dir qwen3.8-s
 
 # 12 GB card, 128K context (q4_0 KV), 11.3 GB peak
 ./build/bin/llama-server -m qwen3.8-s/Qwen3.8-27B-S-mirai.gguf -ngl 99 -fa on -np 1 --jinja \
