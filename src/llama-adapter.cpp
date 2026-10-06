@@ -28,7 +28,7 @@ ggml_tensor * llama_adapter_cvec::apply_to(ggml_context * ctx, ggml_tensor * cur
         if (mode == 1) {
             // projection: layer_dir holds w = d / sqrt(|d|), so cur - w (w . cur) = cur - |d| (cur . v) v
             const int64_t n_embd = layer_dir->ne[0];
-            if (!steered[il] || cur->ne[0] != n_embd) {
+            if (il < 0 || (size_t) il >= steered.size() || !steered[il] || cur->ne[0] != n_embd) {
                 return cur;
             }
             ggml_tensor * x    = ggml_reshape_2d(ctx, cur, n_embd, ggml_nelements(cur) / n_embd);
