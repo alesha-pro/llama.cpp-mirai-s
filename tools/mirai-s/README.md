@@ -42,10 +42,10 @@ text, scene descriptions in my checks).
 
 This fork keeps the KV cache in VRAM, so a 12 GB card stops at 128K with q4_0 KV (147K with `-b 512 -ub 512`).
 [mirai-s-ada](https://github.com/professorpalmer/mirai-s-ada) by Cary Palmer ports the codec to a serving engine with a
-tiered cache: about 44K positions in VRAM and the rest in pinned system RAM. That gives the full 262,144 window at
-q8_0, with MTP drafting at every depth. His numbers on an RTX 4070 12 GB: 75.8 tok/s on a fresh chat, 40.3 at 60K. I
-checked his engine on Ubuntu with a 3090 held to the same 12 GB recipe: its greedy output matches this fork on 5 of 5
-prompts, 66.9 tok/s at 8K and 27.9 at 60K. If you want the long window or the speed, use that project. This fork is
+tiered cache: 51K to 58K positions in VRAM and the rest in pinned system RAM. That gives the full 262,144 window at
+q8_0, with MTP drafting at every depth. His numbers on an RTX 4070 12 GB: 76.6 tok/s on a fresh chat, 61.7 at 60K. I
+checked his engine on Ubuntu with a 3090 held to 12 GB and 44,000 positions in VRAM: its greedy output matches this
+fork on 5 of 5 prompts, 66.9 tok/s at 8K and 27.9 at 60K. `--cvec-mode project` is in his engine too. If you want the long window or the speed, use that project. This fork is
 the smaller one to read, to rebase, and to fall back to.
 
 ## Removing refusals
