@@ -6,6 +6,7 @@
 
 #include <map>
 #include <cassert>
+#include <cmath>
 #include <cerrno>
 #include <cstring>
 #include <sstream>
@@ -24,6 +25,17 @@ ggml_tensor * llama_adapter_cvec::tensor_for(int il) const {
 ggml_tensor * llama_adapter_cvec::apply_to(ggml_context * ctx, ggml_tensor * cur, int  il) const {
     ggml_tensor * layer_dir = tensor_for(il);
     if (layer_dir != nullptr) {
+        if (mode == 1) {
+            // projection: layer_dir holds w = d / sqrt(|d|), so cur - w (w . cur) = cur - |d| (cur . v) v
+            const int64_t n_embd = layer_dir->ne[0];
+            if (!steered[il] || cur->ne[0] != n_embd) {
+                return cur;
+            }
+            ggml_tensor * x    = ggml_reshape_2d(ctx, cur, n_embd, ggml_nelements(cur) / n_embd);
+            ggml_tensor * dot  = ggml_mul_mat(ctx, ggml_reshape_2d(ctx, layer_dir, n_embd, 1), x);    // [1, n_tokens]
+            ggml_tensor * proj = ggml_mul_mat(ctx, ggml_reshape_2d(ctx, layer_dir, 1, n_embd), dot);  // [n_embd, n_tokens]
+            return ggml_sub(ctx, cur, ggml_reshape(ctx, proj, cur));
+        }
         cur = ggml_add(ctx, cur, layer_dir);
     }
 
@@ -122,13 +134,32 @@ bool llama_adapter_cvec::apply(
 
     layer_start = il_start;
     layer_end   = il_end;
+    steered.assign(hparams.n_layer(), false);
 
     for (size_t il = 1; il < hparams.n_layer(); il++) {
         assert(tensors[il] != nullptr);
 
         const size_t off = n_embd * (il - 1); // buffer doesn't have data for layer 0, since it's never present
         if (off + n_embd <= len) {
-            ggml_backend_tensor_set(tensors[il], data + off, 0, n_embd * ggml_element_size(tensors[il]));
+            if (mode == 1) {
+                // projection mode: upload d / sqrt(|d|); a zero direction leaves the layer alone
+                double nrm2 = 0.0;
+                for (int32_t i = 0; i < n_embd; i++) {
+                    nrm2 += (double) data[off + i] * (double) data[off + i];
+                }
+                const double nrm = std::sqrt(nrm2);
+                std::vector<float> w(n_embd, 0.0f);
+                if (nrm > 0.0) {
+                    const double s = 1.0 / std::sqrt(nrm);
+                    for (int32_t i = 0; i < n_embd; i++) {
+                        w[i] = (float) (data[off + i] * s);
+                    }
+                    steered[il] = true;
+                }
+                ggml_backend_tensor_set(tensors[il], w.data(), 0, n_embd * ggml_element_size(tensors[il]));
+            } else {
+                ggml_backend_tensor_set(tensors[il], data + off, 0, n_embd * ggml_element_size(tensors[il]));
+            }
         }
     }
 

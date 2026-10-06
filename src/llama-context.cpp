@@ -1388,6 +1388,11 @@ bool llama_context::set_adapter_cvec(
     return res;
 }
 
+void llama_context::set_adapter_cvec_mode(int32_t mode) {
+    cvec->set_mode(mode);
+    sched_need_reserve = true;
+}
+
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
     if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
@@ -4080,6 +4085,10 @@ int32_t llama_set_adapters_lora(
     ctx->set_adapters_lora(adapters, n_adapters, scales);
 
     return 0;
+}
+
+void llama_set_adapter_cvec_mode(llama_context * ctx, int32_t mode) {
+    ctx->set_adapter_cvec_mode(mode);
 }
 
 int32_t llama_set_adapter_cvec(

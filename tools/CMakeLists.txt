@@ -35,6 +35,7 @@ else()
     if (NOT GGML_BACKEND_DL AND GGML_CPU)
         # these tools use backends directly (no dynamic loading) and depend on CPU backend symbols
         add_subdirectory(cvector-generator)
+        add_subdirectory(resid-dump)
         add_subdirectory(export-lora)
     endif()
     add_subdirectory(fit-params)

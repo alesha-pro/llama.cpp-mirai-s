@@ -3004,6 +3004,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ));
     add_opt(common_arg(
+        {"--cvec-mode"}, "MODE",
+        "how the control vector acts on the residual stream: add (default) or project "
+        "(remove the direction: h -= |d| (h.v) v with v = d/|d|)",
+        [](common_params & params, const std::string & value) {
+            /**/ if (value == "add")     { params.control_vector_mode = 0; }
+            else if (value == "project") { params.control_vector_mode = 1; }
+            else { throw std::invalid_argument("--cvec-mode: add or project"); }
+        }
+    ));
+    add_opt(common_arg(
         {"-a", "--alias"}, "STRING",
         "set model name aliases, comma-separated (to be used by API)",
         [](common_params & params, const std::string & value) {

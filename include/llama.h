@@ -735,6 +735,10 @@ extern "C" {
     // to an n_embd x n_layers buffer starting from layer 1.
     // il_start and il_end are the layer range the vector should apply to (both inclusive)
     // See llama_control_vector_load in common to load a control vector.
+    // How the control vector acts on the residual stream: 0 = add (default), 1 = project
+    // (h -= |d| (h.v) v with v = d/|d|). Call before llama_set_adapter_cvec.
+    LLAMA_API void llama_set_adapter_cvec_mode(struct llama_context * ctx, int32_t mode);
+
     LLAMA_API int32_t llama_set_adapter_cvec(
             struct llama_context * ctx,
                      const float * data,

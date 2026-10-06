@@ -27,11 +27,17 @@ struct llama_adapter_cvec {
             int32_t il_start,
             int32_t il_end);
 
+    // 0 = add (h += d), 1 = project (h -= |d| (h.v) v, v = d/|d|); call before apply()
+    void set_mode(int32_t m) { mode = m; }
+
 private:
     bool init(const llama_model & model);
 
     int32_t layer_start = -1;
     int32_t layer_end   = -1;
+
+    int32_t mode = 0;
+    std::vector<bool> steered; // project mode: the layer has a non-zero direction
 
     std::vector<ggml_context_ptr> ctxs;
     std::vector<ggml_backend_buffer_ptr> bufs;

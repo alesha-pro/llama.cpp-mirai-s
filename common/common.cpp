@@ -1421,6 +1421,7 @@ common_init_result_ptr common_init_from_params(common_params & params, bool mode
             return res;
         }
 
+        llama_set_adapter_cvec_mode(lctx, params.control_vector_mode);
         int err = llama_set_adapter_cvec(
                 lctx,
                 cvec.data.data(),

@@ -131,6 +131,8 @@ struct llama_context {
                 int32_t   il_start,
                 int32_t   il_end);
 
+    void set_adapter_cvec_mode(int32_t mode);
+
     // process a single ubatch with a specific graph type
     // if memory_context is provided, it will be applied first to the context's memory
     // ret contains the status of the graph computation
