@@ -3,10 +3,16 @@
 llama.cpp with support for [Mirai S](https://huggingface.co/trymirai/Qwen3.8-27B-S-experimental), Mirai Labs' 2.4-bit
 Qwen3.8-27B. The compressed trellis codes load from a GGUF bit for bit and run on CUDA, and the model fits a 12 GB GPU
 with 128K context. The fork also speeds up long-context decode with a q8_0/q4_0 KV cache, adds a chunked DeltaNet
-prefill kernel, and keeps the prompt cache when an agent's history re-tokenizes differently.
+prefill kernel, and keeps the prompt cache when an agent's history re-tokenizes differently. With a 1.3 MB vector file
+it can also remove the model's refusals at run time (`--cvec-mode project`).
+
+This is the reference fork: close to upstream, and the one the GGUF was verified on. For daily use on a 12 GB card
+look at [mirai-s-ada](https://github.com/professorpalmer/mirai-s-ada) by Cary Palmer first. It ports this codec to a
+serving engine with the full 262K window at q8_0 KV and MTP drafting, and it ships a Windows bundle. If that project
+changes or breaks, this fork still runs the same file.
 
 - Build, run, formats, numbers: [tools/mirai-s/README.md](tools/mirai-s/README.md)
-- GGUF and vision mmproj: [alesha-pro/Qwen3.8-27B-S-mirai-GGUF](https://huggingface.co/alesha-pro/Qwen3.8-27B-S-mirai-GGUF)
+- GGUF, vision mmproj and the refusal vector: [alesha-pro/Qwen3.8-27B-S-mirai-GGUF](https://huggingface.co/alesha-pro/Qwen3.8-27B-S-mirai-GGUF)
 - Base: ggml-org/llama.cpp at `d834d44e6`. Everything below this line is the upstream README.
 
 ---

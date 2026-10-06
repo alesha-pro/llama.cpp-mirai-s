@@ -29,12 +29,72 @@ hf download alesha-pro/Qwen3.8-27B-S-mirai-GGUF --local-dir qwen3.8-s
   --mmproj qwen3.8-s/mmproj-Qwen3.8-27B-base-f16.gguf --no-mmproj-offload -t <physical cores>
 ```
 
+If an older CUDA is first on your PATH, add `-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc` to the first line.
+
 `-np 1` matters on this hybrid model: every server slot keeps its own DeltaNet state, and the default slot count
 adds about 450 MB (11.7 GB instead of 11.3 GB at 128K), which leaves a 12 GB card almost nothing.
 
 Mirai's checkpoint ships the language model only. The mmproj is the vision encoder of the base Qwen3.8-27B, converted
 with the stock `convert_hf_to_gguf.py --mmproj`; the compressed language model reads its embeddings fine (charts, UI
 text, scene descriptions in my checks).
+
+## The full 262K window on 12 GB: mirai-s-ada
+
+This fork keeps the KV cache in VRAM, so a 12 GB card stops at 128K with q4_0 KV (147K with `-b 512 -ub 512`).
+[mirai-s-ada](https://github.com/professorpalmer/mirai-s-ada) by Cary Palmer ports the codec to a serving engine with a
+tiered cache: about 44K positions in VRAM and the rest in pinned system RAM. That gives the full 262,144 window at
+q8_0, with MTP drafting at every depth. His numbers on an RTX 4070 12 GB: 75.8 tok/s on a fresh chat, 40.3 at 60K. I
+checked his engine on Ubuntu with a 3090 held to the same 12 GB recipe: its greedy output matches this fork on 5 of 5
+prompts, 66.9 tok/s at 8K and 27.9 at 60K. If you want the long window or the speed, use that project. This fork is
+the smaller one to read, to rebase, and to fall back to.
+
+## Removing refusals
+
+The weights are trellis codes, so the usual abliteration (editing the matrices) cannot be written back. Instead the
+refusal direction is a control vector file, and the fork subtracts it from the residual stream after every layer
+while the model runs: `h -= (h.v) v`. Add 2 arguments to any `llama-server` line above:
+
+```bash
+--control-vector-scaled qwen3.8-s/Qwen3.8-27B-S-mirai-refusal-direction.gguf:1.0 --cvec-mode project
+```
+
+`--cvec-mode add` is upstream's behaviour and the default. Without the flag the output is unchanged: KL to the build
+before this change is 0.000000 and the top token is the same in 100% of positions.
+
+On this fork (GGUF template, no system message, one RTX 3090), a refusal counted by a regex on the start of the answer:
+
+| | without the vector | with the vector |
+|---|---:|---:|
+| 64 harmful instructions (AdvBench, not used for the direction), thinking off | 63 refused | 0 |
+| 82 held-out behaviours (JailbreakBench, non-AdvBench rows), thinking off | not run | 0 |
+| 24 harmful instructions, thinking on | 23 | 0 (2 answers empty at the token limit) |
+| 32 ordinary instructions refused | 0 | 0 |
+| decode on short prompts, tok/s | 39.9 | 39.2 |
+
+KL to the model without the vector: 0.019 on prose, 0.009 on code. The top token stays the same in 94.0% and 97.1% of
+positions. The same file behind mirai-s-ada's template, which always writes a system message: 0 of 64, 0 of 82, and 1
+of 24 with thinking on.
+
+The catch: the counts come from a regex over 24 to 82 prompts, I did not read the answers one by one. A very
+different system prompt may leave more refusals.
+
+How the file is made, so you can repeat it or make one for another model:
+
+```bash
+# 1. the residual stream after every layer at the last prompt token; prompts.txt = one templated prompt per line
+./build/bin/llama-resid-dump -m model.gguf --positive-file harmful.txt  -o harmful.bin  -ngl 99 -c 2048
+./build/bin/llama-resid-dump -m model.gguf --positive-file harmless.txt -o harmless.bin -ngl 99 -c 2048
+# 2. one --pair per prompt context (thinking off, thinking on, with a system message ...)
+python3 tools/mirai-s/refusal_direction.py vector.gguf --pair harmful.bin harmless.bin
+```
+
+Per layer and context the script takes the difference of means, removes its component along the mean harmless state,
+normalizes, and averages the contexts. The published file used 256 AdvBench and 256 Alpaca instructions in 6 contexts
+(this template and mirai-s-ada's, thinking on and off, 2 system texts) and has a direction for each of layers 1 to 63.
+With those dumps the script reproduces it byte for byte. Two things I ran into: the plain difference of means broke
+the model in projection mode (empty answers), because an ordinary prompt has 15% to 54% of its norm along it. And the
+directions for thinking on and thinking off differ, so a vector from one prompt ending left 54 of 64 refusals at the
+other.
 
 ## Files
 
@@ -47,6 +107,9 @@ text, scene descriptions in my checks).
 | `ggml/src/ggml-cuda/mirai-s.cu` | CUDA kernels |
 | `tests/test-backend-ops.cpp` | `test_mirai_s`: CUDA against CPU on random codes, every path and format |
 | `tools/mirai-s/compare_vllm.py` | greedy continuations and top-5 logprobs against Mirai's vLLM plugin |
+| `tools/resid-dump/` | `llama-resid-dump`: the residual stream after every layer at the last token of each prompt |
+| `tools/mirai-s/refusal_direction.py` | residual dumps to a refusal-direction control vector |
+| `src/llama-adapter.cpp` | the control vector in projection mode (`--cvec-mode project`) |
 
 ## Format
 
@@ -151,6 +214,9 @@ llama-server, Mirai's `speedcheck.py` (6.9K-token prompt) and a long-prompt scri
 | 128K, q4_0 KV, `-ub 1024` | 11.3 GB | 39.7 tok/s | 34.6 tok/s | 1008 tok/s |
 | 74K, q8_0 KV, `-ub 1024` | 11.1 GB | 40.0 tok/s | 34.9 tok/s | 1009 tok/s |
 | 128K, q8_0 KV, MTP 3 | 14.6 GB | 85 code / 57 prose | | 806 tok/s |
+
+With `-b 512 -ub 512`, a refusal vector loaded and the image encoder on the CPU, the q4_0 setup fits 147,456 tokens (11,689 MiB
+peak, 29.1 tok/s at 144K) and the q8_0 setup 81,920 (11,497 MiB, 32.9 tok/s at 78K); 163,840 at q4_0 peaks at 12,059 MiB.
 
 The 128K q4_0 setup decodes 30.4 tok/s at 117K. On the same card at 300 W, Mirai's vLLM plugin (0.2.1) is faster on
 short prompts: 44 vs 39 tok/s decode, 1336 vs 1120 prefill, 107 vs 84 on code with MTP 3. In a 12 GB budget it fits
